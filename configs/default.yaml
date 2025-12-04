@@ -1,0 +1,79 @@
+algorithm: lstc
+algorithm_params: {}
+seed: 42
+experiment_name: lstc_metadrive
+log_dir: runs
+checkpoint_dir: checkpoints
+
+environment:
+  observation_dim: 49
+  action_dim: 2
+  max_episode_steps: 1000
+  metadrive_config:
+    num_scenarios: 20  # Paper: 20 randomly generated maps for training
+    traffic_density: 0.12  # Paper Table I: 12 vehicles per km per lane
+    start_seed: 0  # Training uses seeds 0-19
+    accident_prob: 0.8  # Paper Table I: 0.8
+    # map: removed - use random maps instead of fixed SSRCR
+    # MetaDrive will randomly generate maps from elementary components (straight, curve, intersection, etc.)
+    decision_repeat: 5
+    map_config:
+      lane_num: 3
+    vehicle_config:
+      lidar:
+        num_lasers: 30
+        distance: 50.0
+    random_traffic: true
+    use_render: false
+    manual_control: false
+    crash_vehicle_done: true
+    crash_object_done: true
+    out_of_road_done: true
+    discrete_action: false
+  metadrive_credentials:
+    github_username: "WilliamQiuzy"
+  safety_thresholds:
+    speed_limit: 22.22  # 80 km/h
+    heading_limit_deg: 45.0
+    lane_offset_limit: 1.5
+    min_ttc: 1.5
+    min_lidar_distance: 1.0
+    lidar_num_bins: 30
+
+training:
+  total_env_steps: 10000000  # Paper: 1×10^7 steps
+  rollout_steps: 20000
+  epochs_per_update: 10
+  minibatch_size: 256
+  gamma: 0.99  # Paper Table II
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  entropy_coef: 0.01  # Same as PPO for fair comparison
+  value_coef: 0.5
+  max_grad_norm: 0.5
+
+optimizer:
+  policy_lr: 3.0e-4
+  value_lr: 3.0e-4
+  cost_value_lr: 3.0e-4
+  validation_lr: 3.0e-4
+
+constraints:
+  cost_limit: 1.0
+  short_term_horizon: 5
+  lambda_long_init: 0.1
+  lambda_short_init: 0.5
+  lambda_long_lr: 2.5e-2
+  lambda_short_lr: 1.0e-2
+
+logging:
+  eval_interval_steps: 200000
+  checkpoint_interval_steps: 500000
+  eval_episodes: 20
+  tensorboard: true
+
+evaluation_environment:
+  # Use a disjoint seed range for unseen maps during evaluation
+  metadrive_config:
+    start_seed: 20
+    num_scenarios: 20

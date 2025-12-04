@@ -1,0 +1,7 @@
+metadrive-simulator==0.2.5.3
+torch==2.2.1
+numpy==1.26.4
+pyyaml==6.0.1
+tqdm==4.66.2
+tensorboard==2.16.2
+pytest==7.4.4
