@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from safemeta_rl.agents.base import AgentOutput
 from safemeta_rl.agents.lstc_agent import LSTCAgent
+from safemeta_rl.agents.lstc_pid_agent import LSTCPIDAgent
 from safemeta_rl.agents.ppo_agent import PPOAgent
 from safemeta_rl.agents.ppo_lag_agent import PPOLagAgent
 from safemeta_rl.agents.epo_agent import EPOAgent
@@ -45,8 +46,8 @@ class Trainer:
 
         self.algorithm = config.get("algorithm", "lstc").lower()
         self.algorithm_params = config.get("algorithm_params", {})
-        self.use_short_constraint = self.algorithm == "lstc"
-        self.use_long_constraint = self.algorithm in ("lstc", "ppo_lag", "epo")
+        self.use_short_constraint = self.algorithm in ("lstc", "lstc_pid")
+        self.use_long_constraint = self.algorithm in ("lstc", "lstc_pid", "ppo_lag", "epo")
         sample_obs = self.env.reset()
         self._pending_initial_obs = sample_obs
         self._pending_initial_feasible = self.env.current_feasible()
@@ -68,6 +69,18 @@ class Trainer:
         elif self.algorithm == "epo":
             penalty = self.algorithm_params.get("epo_penalty", config["constraints"]["lambda_long_init"])
             self.agent = EPOAgent(self.policy, self.value_net, self.cost_value_net, config, penalty=penalty)
+        elif self.algorithm == "lstc_pid":
+            # LSTC with PID-style Lagrange multiplier updates (Stooke et al., 2020)
+            self.agent = LSTCPIDAgent(
+                self.policy,
+                self.value_net,
+                self.cost_value_net,
+                self.validation_net,
+                config,
+                use_validation=self.use_short_constraint,
+                update_long=self.use_long_constraint,
+                update_short=self.use_short_constraint,
+            )
         else:
             self.agent = LSTCAgent(
                 self.policy,
@@ -245,6 +258,10 @@ class Trainer:
                     "num_episodes_completed": len(completed_rewards),
                     "current_episode_length": episode_length,
                 }
+                # Log PID internal states if using LSTC-PID
+                if hasattr(self.agent, "get_pid_stats"):
+                    pid_stats = self.agent.get_pid_stats()
+                    log_payload.update(pid_stats)
                 for name, total_value in reward_component_sums.items():
                     log_payload[f"avg_{name}"] = total_value / max(1, len(states_window))
                 self.logger.log(log_payload)

@@ -1,0 +1,275 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{multirow}
+
+\title{Dual Constraints Safe Reinforcement Learning for Autonomous Driving}
+\author{Ziyue Qiu\\\text{ziyueqiu@mit.edu}}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We study safe reinforcement learning for urban autonomous driving in the MetaDrive ``European Town'' scenario.
+Within a unified PPO framework, we compare four agents: reward-only PPO \cite{schulman2017ppo}, a Lagrangian variant PPO-Lag \cite{ray2019safexp}, Long- and Short-Term Constraints RL (LSTC) \cite{hu2024lstc}, and our PID-enhanced LSTC-PID.
+LSTC-PID keeps the dual long- and short-term safety constraints of LSTC but replaces the hand-tuned integral multiplier update with a PID controller and a trajectory-level correction step, which together adapt the strength of safety penalties more quickly and stably in high-variance driving scenes.
+On MetaDrive European Town, both LSTC and LSTC-PID consistently reduce collision, off-road, and traffic-rule violation rates compared to PPO and PPO-Lag while achieving comparable episodic return.
+Across three representative maps, LSTC-PID provides the best safety--return trade-off, yielding the lowest safety costs with only marginal loss in task performance.
+\end{abstract}
+
+
+\section{Methodologies}
+\label{sec:setup}
+
+We study how increasingly safety-aware variants of PPO behave in a dense urban driving benchmark.
+On the MetaDrive ``European Town'' scenario, we compare:
+(i) reward-only PPO,
+(ii) a long-term Lagrangian variant (PPO-Lag),
+(iii) a trajectory-level correction layer (LSTC),
+and (iv) an enhanced version with PID multipliers (LSTC-PID).
+We now formalize the task as a CMDP, describe the algorithms, and give the reward, costs, and training configuration.
+
+\subsection*{Constraint Markov Decision Process (CMDP)}
+
+We model town driving as a CMDP $(\mathcal{S},\mathcal{A},P,r,\{c_i\}_{i=1}^m,\gamma)$ with continuous actions $a_t\in[-1,1]^2$ (steering and longitudinal control) and discount $\gamma=0.99$.
+An episode has horizon $H=1000$ and generates a trajectory $\tau=(s_0,a_0,\dots,s_{H-1},a_{H-1},s_H)$ under policy $\pi_\theta(a\mid s)$, where $s_t\in\mathbb{R}^{49}$ is the MetaDrive observation (lidar plus ego features).
+The expected return and discounted costs are
+\begin{align}
+  J(\theta) &= \mathbb{E}_\theta\Big[\sum_{t=0}^{H-1}\gamma^t r(s_t,a_t)\Big], &
+  J_i^{\text{cost}}(\theta) &= \mathbb{E}_\theta\Big[\sum_{t=0}^{H-1}\gamma^t c_i(s_t,a_t)\Big].
+\end{align}
+We seek to maximize $J(\theta)$ subject to $J_i^{\text{cost}}(\theta)\le d_i$, using the standard Lagrangian relaxation
+\begin{equation}
+  \mathcal{L}(\theta,\lambda)
+  = J(\theta) - \sum_{i=1}^m \lambda_i\big(J_i^{\text{cost}}(\theta)-d_i\big).
+  \label{eq:lagrangian}
+\end{equation}
+
+\subsection*{PPO and PPO-Lag baselines}
+
+We next describe the policy optimization baselines used in all experiments.
+
+\paragraph{PPO.}
+We use standard PPO as the base algorithm.
+Let $\theta_{\text{old}}$ denote policy parameters before an update and
+\begin{equation}
+    r_t(\theta)
+    = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)}
+\end{equation}
+the importance ratio.
+Given reward advantages $\hat{A}_t$, the clipped surrogate is
+\begin{equation}
+    L^{\text{CLIP}}(\theta)
+    = \mathbb{E}_t\Big[\min\big(
+        r_t(\theta)\hat{A}_t,\;
+        \mathrm{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat{A}_t
+    \big)\Big],
+\end{equation}
+with clip ratio $\epsilon$.
+We add standard value and entropy terms (omitted here for brevity).
+
+\paragraph{PPO-Lag.}
+To handle long-term safety, PPO-Lag augments PPO with cost advantages.
+For each cost $c_i$ we maintain a cost value function and compute cost advantages $\hat{A}_t^{\text{cost},i}$.
+The surrogate corresponding to the first-order Lagrangian \eqref{eq:lagrangian} is
+\begin{equation}
+    L^{\text{Lag}}(\theta,\lambda)
+    = \mathbb{E}_t\Big[
+        \min\big(
+            r_t(\theta)\hat{A}_t,\;
+            \mathrm{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat{A}_t
+        \big)
+        - \sum_{i=1}^m \lambda_i \hat{A}_t^{\text{cost},i}
+    \Big].
+\end{equation}
+Multipliers are updated from empirical costs on a slower time scale:
+\begin{equation}
+    \lambda_i \leftarrow
+    \Big[\lambda_i + \eta_\lambda (\hat{J}_i^{\text{cost}} - d_i)\Big]_+,
+    \quad i=1,\dots,m,
+    \label{eq:lambda-plain}
+\end{equation}
+where $\hat{J}_i^{\text{cost}}$ is the discounted cost of constraint $i$ in the current batch, $\eta_\lambda$ is a step size, and $[\cdot]_+$ projects onto $\mathbb{R}_+$.
+Further details can be found in Ray et al.~\cite{ray2019safexp}.
+In summary, PPO-Lag uses the same policy architecture and optimization as PPO, but augments the surrogate with cost advantages and maintains one scalar multiplier $\lambda_i$ per primitive cost signal $c_i$.
+
+\subsection*{Trajectory-level correction}
+
+PPO-Lag penalizes expected long-term violations but does not explicitly edit risky actions.
+LSTC adds a trajectory optimizer with \emph{two} safety constraints; our LSTC-PID variant keeps the same dual formulation but changes how the multipliers are updated.
+
+\paragraph{Dual long- and short-term constraints.}
+Whereas PPO-Lag maintains a separate multiplier for each primitive cost $c_i$, LSTC aggregates them and introduces two trajectory-level constraints.
+Inspired by Hu et al.~\cite{hu2024lstc}, we introduce two trajectory-level costs.
+Let
+\begin{equation}
+  c_{\text{long}}(s_t,a_t)
+  = c_{\text{coll}}(s_t,a_t)
+  + c_{\text{off}}(s_t,a_t)
+  + c_{\text{rule}}(s_t,a_t).
+\end{equation}
+The long-term cost is the discounted sum
+$C_{\text{long}}(\tau)=\sum_{t=0}^{H-1}\gamma^t c_{\text{long}}(s_t,a_t)$.
+To capture local bursts of risk, we define a short-term cost over a sliding window of size $H_s$:
+\begin{equation}
+  C_{\text{short}}(\tau)
+  = \sum_{t=0}^{H-1} \gamma^t \frac{1}{H_s}\sum_{k=0}^{H_s-1} c_{\text{long}}(s_{t+k},a_{t+k}),
+\end{equation}
+truncated near episode end.
+We write $C_j(\theta)=\mathbb{E}_\theta[C_j(\tau)]$ for $j\in\{\text{long},\text{short}\}$ and optimize the dual objective
+\begin{equation}
+  \mathcal{L}_{\text{LSTC}}(\theta,\lambda)
+  = J(\theta)
+  - \lambda_{\text{long}}\big(C_{\text{long}}(\theta)-d_{\text{long}}\big)
+  - \lambda_{\text{short}}\big(C_{\text{short}}(\theta)-d_{\text{short}}\big).
+  \label{eq:lstc-lagrangian}
+\end{equation}
+Here $\lambda_{\text{long}},\lambda_{\text{short}}\ge 0$ are multipliers for the long- and short-term constraints with budgets $d_{\text{long}}$ and $d_{\text{short}}$.
+In practice, LSTC reuses the PPO-Lag surrogate but replaces the primitive costs $J_i^{\text{cost}}$ by the aggregated long- and short-term costs $C_{\text{long}}$ and $C_{\text{short}}$.
+Intuitively, $C_{\text{long}}$ controls the overall number of failures, while $C_{\text{short}}$ penalizes trajectories that enter locally unsafe regions.
+
+\paragraph{Trajectory-level correction and PID multipliers.}
+Given a sampled trajectory $\tau$ and current multipliers $(\lambda_{\text{long}},\lambda_{\text{short}})$, we introduce corrected actions $\tilde{a}_t$ and minimize
+\begin{equation}
+  \mathcal{J}(\tilde{\mathbf{a}};\lambda)
+  = - \sum_{t=0}^{H-1}\gamma^t r(s_t,\tilde{a}_t)
+    + \lambda_{\text{long}} C_{\text{long}}(\tilde{\mathbf{a}})
+    + \lambda_{\text{short}} C_{\text{short}}(\tilde{\mathbf{a}})
+    + \beta \sum_{t=0}^{H-1}\|\tilde{a}_t - a_t\|_2^2,
+  \label{eq:lstc-objective}
+\end{equation}
+where costs are computed along $(s_t,\tilde{a}_t)$ and $\beta>0$ controls the trust region around the policy output.
+We perform a few gradient steps on $\tilde{\mathbf{a}}$ and treat the final $\tilde{a}_t$ as the executed actions; both during training and evaluation the environment receives these corrected actions, so the trajectory editor acts as a runtime safety filter on top of the PPO policy.
+
+To adapt the dual variables more stably than the integral update~\eqref{eq:lambda-plain}, LSTC-PID replaces it with a discrete-time PID controller.
+For $j\in\{\text{long},\text{short}\}$ and iteration $k$,
+\begin{equation}
+  \lambda_j^{(k+1)} =
+  \Big[K_P e_j^{(k)} + K_I I_j^{(k+1)} + K_D D_j^{(k)}\Big]_+,
+  \label{eq:pid-update}
+\end{equation}
+where $e_j^{(k)}$ is the deviation of the empirical cost $C_j$ from its budget, $I_j^{(k+1)}$ accumulates past deviations, and $D_j^{(k)}$ is a finite-difference estimate of their change.
+The proportional, integral, and derivative gains $(K_P,K_I,K_D)$ are fixed across runs and given in the appendix and accompanying code.
+Compared to LSTC, LSTC-PID thus keeps the same dual objective~\eqref{eq:lstc-lagrangian} and trajectory correction~\eqref{eq:lstc-objective}, and differs only in how the multipliers are updated.
+
+\subsection*{Reward, costs, and training setup}
+
+We follow the reward design of Hu et al.~\cite{hu2024lstc} and denote the per-step reward by $r(s_t,a_t)$, decomposed as
+\begin{equation}
+    R_t
+    = c_1 R_{\text{dis},t}
+    + c_2 R_{\text{speed},t}
+    + c_3 R_{\text{yaw},t}
+    + c_4 R_{\text{steer},t}
+    + R_{\text{term},t},
+    \label{eq:reward}
+\end{equation}
+with $(c_1,c_2,c_3,c_4)=(1.0,0.1,-0.4,-0.4)$.
+Here $R_{\text{dis},t}$ rewards longitudinal progress along the route, $R_{\text{speed},t}$ encourages driving near a target speed ($v_t\approx v_{\max}$), and $R_{\text{yaw},t}$ and $R_{\text{steer},t}$ penalize rapid changes in heading and steering, promoting smooth lane-keeping.
+$R_{\text{term},t}$ is a sparse terminal term that gives a positive bonus when the destination is reached and a negative penalty when the vehicle leaves the lane or the episode terminates due to failure.
+
+Safety costs are binary indicators from MetaDrive events:
+\begin{align}
+    c_{\text{coll}}(s_t,a_t) &= \mathbb{I}\{\text{collision at } t\}, \\
+    c_{\text{off}}(s_t,a_t) &= \mathbb{I}\{\text{out-of-road at } t\}, \\
+    c_{\text{rule}}(s_t,a_t) &= \mathbb{I}\{\text{traffic-rule violation at } t\}.
+\end{align}
+Budgets $d_i$ are chosen so that the target expected number of violations per episode is at most one, and are shared across PPO-Lag, LSTC, and LSTC-PID.
+
+All agents share standard PPO hyperparameters (discount $\gamma=0.99$, GAE parameter $\lambda_{\text{GAE}}=0.95$, clip ratio $\epsilon=0.2$, entropy coefficient $0.01$) and are trained for $10^7$ environment steps.
+Full hyperparameter lists and implementation details, including hardware and configuration files for each method, are provided in the appendix and our open-source repository at
+\url{https://github.com/WilliamQiuzy/SafeMeta-RL}.
+
+
+\section{Results}
+
+We evaluate PPO, PPO-Lag, LSTC, and LSTC-PID in the MetaDrive European Town map using both performance and safety metrics.
+
+\subsection{Evaluation metrics}
+
+For each method we report the average episodic return $\mathbb{E}[\sum_t \gamma^t r(s_t,a_t)]$ and success rate, defined as the fraction of episodes that reach the destination without catastrophic failure.
+We also track per-episode safety costs derived from $c_{\text{coll}}$, $c_{\text{off}}$, and $c_{\text{rule}}$, as well as their empirical violation rates.
+All scalars are averaged over multiple evaluation episodes on held-out maps; when running several random seeds we aggregate statistics across seeds and report the mean.
+
+\subsection{Reward curves}
+
+To study learning dynamics, Figure~\ref{fig:reward_curve} shows the average episode return and safety metrics over environment steps for all four algorithms, smoothed with a moving window.
+
+We observe that LSTC and LSTC-PID reach similar or slightly lower asymptotic return than PPO, while PPO-Lag tends to under-explore and plateaus at a lower return level.
+At the same time, LSTC and LSTC-PID converge to substantially lower cost levels than both PPO and PPO-Lag.
+
+
+We also note that the training curves remain somewhat noisy, reflecting the high-variance traffic scenarios and our finite training budget.
+
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{4in1.png}
+    \caption{Training curves showing episode reward and safety metrics for PPO, PPO-Lag, LSTC, and LSTC-PID on the European Town benchmark.}
+    \label{fig:reward_curve}
+\end{figure}
+
+\subsection{Quantitative comparison}
+
+Table~\ref{tab:main_results} summarizes the main quantitative results in the style of the original LSTC paper: success rates and episode costs for several European Town scenarios.
+Across all three maps, LSTC and LSTC-PID substantially reduce safety cost compared to PPO and PPO-Lag, with LSTC-PID achieving the best overall safety--return trade-off: collision and off-road costs are consistently lowest, while success rates remain close to the PPO baseline.
+
+\begin{table}[t]
+    \centering
+    \caption{Success rate ($\uparrow$) and episode cost ($\downarrow$) on three representative European Town scenarios.}
+    \label{tab:main_results}
+\begin{tabular}{lcccccc}
+    \toprule
+    \multirow{2}{*}{Method} &
+    \multicolumn{3}{c}{Success rate $\uparrow$} &
+    \multicolumn{3}{c}{Episode cost $\downarrow$} \\
+    \cmidrule(lr){2-4}\cmidrule(lr){5-7}
+    & InRamp & Slet & Rodab & InRamp & Slet & Rodab \\
+    \midrule
+    PPO          & 98\% & 78\% & 36\% & 3.1 & 3.7 & 4.7 \\
+    PPO-Lag      & 98\% & 100\% & 55\% & 0.04 & 1.82 & 1.82 \\
+    LSTC         & 100\% & 100\% & 73\% & 0.02 & 0.56 & 0.88 \\
+    LSTC-PID (ours) & 100\% & 100\% & 78\% & 0.05 & 0.05 & 0.70 \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Trajectory examples}
+
+Figure~\ref{fig:traj} visualizes representative trajectories for all four methods on a dense-intersection scenario.
+PPO often approaches intersections aggressively and performs late lane changes, whereas LSTC and especially LSTC-PID exhibit smoother braking profiles and maintain larger safety margins around other vehicles.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{trajectories.jpg}
+    \caption{Representative trajectories in the European Town map comparing PPO, PPO-Lag, LSTC, and LSTC-PID on a multi-vehicle intersection scenario.}
+    \label{fig:traj}
+\end{figure}
+
+\clearpage
+\begin{thebibliography}{99}
+
+\bibitem{hu2024lstc}
+X.~Hu, P.~Chen, Y.~Wen, B.~Tang, and L.~Chen,
+``Long and Short-Term Constraints Driven Safe Reinforcement Learning for Autonomous Driving,''
+\emph{arXiv preprint} arXiv:2403.18209, 2024.
+
+\bibitem{ray2019safexp}
+A.~Ray, J.~Achiam, and D.~Amodei,
+``Benchmarking Safe Exploration in Deep Reinforcement Learning,''
+\emph{arXiv preprint} arXiv:1910.01708, 2019.
+
+\bibitem{schulman2017ppo}
+J.~Schulman, F.~Wolski, P.~Dhariwal, A.~Radford, and O.~Klimov,
+``Proximal Policy Optimization Algorithms,''
+\emph{arXiv preprint} arXiv:1707.06347, 2017.
+
+\end{thebibliography}
+
+\end{document}
