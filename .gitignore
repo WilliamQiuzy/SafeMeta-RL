@@ -175,3 +175,8 @@ cython_debug/
 
 # Experiment metrics
 runs/*/metrics.csv
+
+# Experiment outputs (checkpoints are published as a GitHub release)
+runs/
+artifacts/
+.DS_Store
