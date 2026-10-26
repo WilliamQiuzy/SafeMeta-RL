@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+      - name: Install the pinned toolchain and dependencies
+        # gym 0.19.0 (pinned by metadrive-simulator 0.2.5.3) ships only an sdist whose
+        # metadata newer pip/setuptools reject, so build it with the 2021-era toolchain.
+        run: |
+          python -m pip install pip==24.0 setuptools==59.8.0 wheel==0.37.1
+          pip install --no-build-isolation gym==0.19.0
+          pip install torch==2.2.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Run the test suite (MetaDrive runs headless with rendering off)
+        env:
+          PYTHONPATH: src
+        run: pytest -q

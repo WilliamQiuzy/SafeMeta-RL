@@ -11,8 +11,7 @@ def _headless_env_config():
     env_cfg = dict(cfg["environment"])
     md_cfg = dict(env_cfg.get("metadrive_config", {}))
     md_cfg["use_render"] = False
-    md_cfg["offscreen_render"] = True
-    md_cfg["headless_machine_render"] = True
+    md_cfg["offscreen_render"] = False  # state observations only, as in training
     env_cfg["metadrive_config"] = md_cfg
     return env_cfg
 

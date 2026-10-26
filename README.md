@@ -1,5 +1,9 @@
 # SafeMeta-RL: Dual-Constraint Safe RL for Autonomous Driving
 
+[![tests](https://github.com/WilliamQiuzy/SafeMeta-RL/actions/workflows/tests.yml/badge.svg)](https://github.com/WilliamQiuzy/SafeMeta-RL/actions/workflows/tests.yml)
+![Python 3.9](https://img.shields.io/badge/python-3.9-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Safe reinforcement learning for urban driving in the MetaDrive *European Town* scenario,
 posed as a constrained MDP with collision, off-road and traffic-rule costs. We compare four
 increasingly safety-aware variants of PPO:
